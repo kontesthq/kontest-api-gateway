@@ -103,8 +103,8 @@ func main() {
 	http.HandleFunc("/", gateway.ForwardRequest)
 
 	// Start the API Gateway server on port 8080
-	log.Println("API Gateway listening on port 5150...")
-	err := http.ListenAndServe(":5150", nil)
+	log.Println("API Gateway listening on port 5153...")
+	err := http.ListenAndServe(":5153", nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
