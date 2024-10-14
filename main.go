@@ -2,15 +2,20 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	loadbalancer "github.com/ayushs-2k4/go-load-balancer"
-	"github.com/ayushs-2k4/go-security/Auth"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+)
+
+const (
+	jwtSecret = "JWT Secret"
 )
 
 // Route defines a mapping from a path prefix to a backend service
@@ -57,6 +62,40 @@ func PathMatches(routePath, requestPath string) bool {
 	return false
 }
 
+func doesContainInappropriateHeaders(r *http.Request) (bool, error) {
+	inappropriateHeaders := [...]string{"user-id"}
+	inappropriateValues := [...]string{"hack"}
+
+	// Convert inappropriateHeaders to lowercase
+	for i := range inappropriateHeaders {
+		inappropriateHeaders[i] = strings.ToLower(inappropriateHeaders[i])
+	}
+
+	// Check headers
+	for header, values := range r.Header {
+		// Convert header to lowercase for case-insensitive comparison
+		lowerHeader := strings.ToLower(header)
+
+		if slices.Contains(inappropriateHeaders[:], lowerHeader) {
+			return true, errors.New("inappropriate headers found")
+		}
+
+		// Check values for each header
+		for _, value := range values {
+			// Convert value to lowercase for case-insensitive comparison
+			if slices.Contains(inappropriateValues[:], strings.ToLower(value)) {
+				return true, errors.New("inappropriate values found")
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func isRequestInvalid(r *http.Request) (bool, error) {
+	return doesContainInappropriateHeaders(r)
+}
+
 // FindBackend finds the backend service for a given request path
 func (g *APIGateway) FindBackend(path string) (string, string, error) {
 	log.Printf("Finding backend for path: %s\n", path)
@@ -97,6 +136,20 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Incoming request: %s %s\n", r.Method, r.URL.Path)
 
+	// Check if it contains inappropriate headers
+
+	isRequestInvalid, err := isRequestInvalid(r)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("%s", err), http.StatusBadRequest)
+		return
+	}
+
+	if isRequestInvalid {
+		http.Error(w, "Request is invalid", http.StatusBadRequest)
+		return
+	}
+
 	// Find the appropriate backend based on the request path
 	backend, newPath, err := g.FindBackend(r.URL.Path)
 	if err != nil {
@@ -126,8 +179,28 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy the headers from the original request
+	// get user-id from jwt (if present)
+	tokenString := r.Header.Get("Authorization")
+	if tokenString == "" {
+		// no auth header present
+	} else {
+		// Validate the JWT
+		claims, err := ValidateJWT(tokenString, []byte(jwtSecret))
+		if err != nil || claims == nil {
+			http.Error(w, "Invalid JWT", http.StatusUnauthorized)
+			return
+		}
+
+		// add it to the request header
+		req.Header.Add("user-id", claims.Subject)
+	}
+
+	// Copy the headers from the original request except Authorization
 	for header, values := range r.Header {
+		if header == "Authorization" {
+			continue
+		}
+
 		for _, value := range values {
 			req.Header.Add(header, value)
 		}
@@ -154,22 +227,6 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 	log.Printf("Request forwarded with status: %d\n", resp.StatusCode)
-}
-
-func getAuthChain() *Auth.AuthChain {
-	jwtSecret := "JWT Secret"
-
-	jwtAuth := NewJWTAuth([]byte(jwtSecret))
-
-	authChain := Auth.NewAuthChain(jwtAuth)
-
-	err := authChain.AddSkipPath("^/auth(/.*)?$")
-
-	if err != nil {
-		log.Fatalf("Failed to add skip path: %v", err)
-	}
-
-	return authChain
 }
 
 func main() {
@@ -199,17 +256,14 @@ func main() {
 		},
 	)
 
-	authChain := getAuthChain()
-
 	router := http.NewServeMux()
-	wrappedRouter := Auth.AuthMiddleware(authChain, router)
 
 	// Define the main route to forward all requests through the API Gateway
 	router.HandleFunc("/", gateway.ForwardRequest)
 
 	// Start the API Gateway server on port 5153
 	log.Println("API Gateway listening on port 5153...")
-	err := http.ListenAndServe(":5153", wrappedRouter)
+	err := http.ListenAndServe(":5153", router)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
