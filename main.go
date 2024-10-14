@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	loadbalancer "github.com/ayushs-2k4/go-load-balancer"
+	"github.com/ayushs-2k4/go-security/Auth"
 	"io"
 	"log"
 	"net/http"
@@ -155,7 +156,25 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Request forwarded with status: %d\n", resp.StatusCode)
 }
 
+func getAuthChain() *Auth.AuthChain {
+	jwtSecret := "JWT Secret"
+
+	jwtAuth := NewJWTAuth([]byte(jwtSecret))
+
+	authChain := Auth.NewAuthChain(jwtAuth)
+
+	err := authChain.AddSkipPath("^/auth(/.*)?$")
+
+	if err != nil {
+		log.Fatalf("Failed to add skip path: %v", err)
+	}
+
+	return authChain
+}
+
 func main() {
+	//testingSecurity()
+
 	var consulHost = "localhost"
 	var consulPort = 5150
 
@@ -176,15 +195,21 @@ func main() {
 		[]Route{
 			{Path: "/kontest", Backend: "lb://KONTEST-API"},
 			{Path: "/user-stats", Backend: "lb://KONTEST-USER-STATS-SERVICE"},
+			{Path: "/auth", Backend: "lb://KONTEST-AUTHENTICATION-SERVICE"},
 		},
 	)
 
+	authChain := getAuthChain()
+
+	router := http.NewServeMux()
+	wrappedRouter := Auth.AuthMiddleware(authChain, router)
+
 	// Define the main route to forward all requests through the API Gateway
-	http.HandleFunc("/", gateway.ForwardRequest)
+	router.HandleFunc("/", gateway.ForwardRequest)
 
 	// Start the API Gateway server on port 5153
 	log.Println("API Gateway listening on port 5153...")
-	err := http.ListenAndServe(":5153", nil)
+	err := http.ListenAndServe(":5153", wrappedRouter)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
