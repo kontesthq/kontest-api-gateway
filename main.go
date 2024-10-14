@@ -5,6 +5,7 @@ import (
 	"fmt"
 	loadbalancer "github.com/ayushs-2k4/go-load-balancer"
 	"io"
+	"kontest-api-gateway/Auth"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,10 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-)
-
-const (
-	jwtSecret = "JWT Secret"
 )
 
 // Route defines a mapping from a path prefix to a backend service
@@ -185,7 +182,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		// no auth header present
 	} else {
 		// Validate the JWT
-		claims, err := ValidateJWT(tokenString, []byte(jwtSecret))
+		claims, err := Auth.ValidateJWT(tokenString, []byte(Auth.JWTSecret))
 		if err != nil || claims == nil {
 			http.Error(w, "Invalid JWT", http.StatusUnauthorized)
 			return
