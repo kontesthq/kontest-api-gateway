@@ -3,7 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	loadbalancer "github.com/ayushs-2k4/go-load-balancer"
+	loadBalancer "github.com/ayushs-2k4/go-load-balancer"
+	loadBalancerError "github.com/ayushs-2k4/go-load-balancer/error"
 	"io"
 	"kontest-api-gateway/Auth"
 	"log"
@@ -104,7 +105,7 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 				log.Printf("Using load balancer for service: %s\n", serviceName)
 
 				// Get the load balancer for the service
-				lb, err := loadbalancer.GetLoadBalancer(serviceName, g.ConsulHost, g.ConsulPort)
+				lb, err := loadBalancer.GetLoadBalancer(serviceName, g.ConsulHost, g.ConsulPort)
 				if err != nil {
 					log.Printf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err)
 					return "", "", err
@@ -150,9 +151,15 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	// Find the appropriate backend based on the request path
 	backend, newPath, err := g.FindBackend(r.URL.Path)
 	if err != nil {
-		log.Printf("Error finding backend: %s\n", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		var noHealthyInstanceAvailableError *loadBalancerError.NoHealthyInstanceAvailableError
+		switch {
+		case errors.As(err, &noHealthyInstanceAvailableError):
+			// Handle the specific error here
+			http.Error(w, "Currently service not available", http.StatusInternalServerError)
+			// Optionally, you can access e.ServiceName() if needed
+		default:
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 	}
 
 	// Create the new URL for the backend service
