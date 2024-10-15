@@ -160,6 +160,9 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
+
+		log.Printf("Error finding backend: %s\n", err)
+		return
 	}
 
 	// Create the new URL for the backend service
