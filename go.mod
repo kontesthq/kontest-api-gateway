@@ -3,7 +3,7 @@ module kontest-api-gateway
 go 1.23.2
 
 require (
-	github.com/ayushs-2k4/go-load-balancer v0.1.7
+	github.com/ayushs-2k4/go-load-balancer v0.1.8-beta-6
 	github.com/golang-jwt/jwt v3.2.2+incompatible
 )
 

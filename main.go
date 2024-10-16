@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	loadBalancer "github.com/ayushs-2k4/go-load-balancer"
 	loadBalancerError "github.com/ayushs-2k4/go-load-balancer/error"
+	"github.com/ayushs-2k4/go-load-balancer/loadbalancer"
 	"io"
 	"kontest-api-gateway/Auth"
 	"log"
@@ -105,7 +105,7 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 				log.Printf("Using load balancer for service: %s\n", serviceName)
 
 				// Get the load balancer for the service
-				lb, err := loadBalancer.GetLoadBalancer(serviceName, g.ConsulHost, g.ConsulPort)
+				lb, err := loadbalancer.GetLoadBalancer(serviceName, g.ConsulHost, g.ConsulPort)
 				if err != nil {
 					log.Printf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err)
 					return "", "", err
