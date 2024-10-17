@@ -7,6 +7,7 @@ import (
 	"github.com/ayushs-2k4/go-load-balancer/loadbalancer"
 	"io"
 	"kontest-api-gateway/Auth"
+	"kontest-api-gateway/utils"
 	"log"
 	"net/http"
 	"net/url"
@@ -199,7 +200,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// add it to the request header
-		req.Header.Add("user-id", claims.Subject)
+		req.Header.Add(utils.UserIdRequestHeader, claims.Subject)
 	}
 
 	// Copy the headers from the original request except Authorization
