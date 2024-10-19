@@ -261,6 +261,7 @@ func main() {
 			{Path: "/kontest", Backend: "lb://KONTEST-API"},
 			{Path: "/user-stats", Backend: "lb://KONTEST-USER-STATS-SERVICE"},
 			{Path: "/auth", Backend: "lb://KONTEST-AUTHENTICATION-SERVICE"},
+			{Path: "/user", Backend: "lb://KONTEST-USER-SERVICE"},
 		},
 	)
 
