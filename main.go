@@ -1,10 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	loadBalancerError "github.com/ayushs-2k4/go-load-balancer/error"
-	"github.com/ayushs-2k4/go-load-balancer/loadbalancer"
+	loadBalancerError "github.com/kontesthq/go-load-balancer/error"
+	"github.com/kontesthq/go-load-balancer/loadbalancer"
 	"io"
 	"kontest-api-gateway/Auth"
 	"kontest-api-gateway/utils"
@@ -62,7 +63,7 @@ func PathMatches(routePath, requestPath string) bool {
 }
 
 func doesContainInappropriateHeaders(r *http.Request) (bool, error) {
-	inappropriateHeaders := [...]string{"user-id"}
+	inappropriateHeaders := [...]string{utils.UserIdRequestHeader}
 	inappropriateValues := [...]string{"hack"}
 
 	// Convert inappropriateHeaders to lowercase
@@ -110,6 +111,17 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 				if err != nil {
 					log.Printf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err)
 					return "", "", err
+				}
+
+				allInstances, err := lb.GetHealthyInstances()
+
+				for _, instance := range allInstances {
+					instanceJSON, err := json.Marshal(instance)
+					if err != nil {
+						fmt.Println("Error marshalling instance to JSON:", err)
+						continue
+					}
+					fmt.Println(string(instanceJSON)) // This will print the instance as a JSON string
 				}
 
 				// Get the healthy instances of the service
