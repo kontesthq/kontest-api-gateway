@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kontesthq/go-load-balancer/client"
 	loadBalancerError "github.com/kontesthq/go-load-balancer/error"
-	"github.com/kontesthq/go-load-balancer/loadbalancer"
 	"io"
 	"kontest-api-gateway/Auth"
 	"kontest-api-gateway/utils"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,17 +27,19 @@ type Route struct {
 
 // APIGateway holds the routing information and the Consul configuration.
 type APIGateway struct {
-	Routes     []Route // List of routes
-	ConsulHost string  // Consul host used for load balancing
-	ConsulPort int     // Consul port used for load balancing
+	Routes              []Route // List of routes
+	LoadBalancerClients map[string]*client.Client
+	ConsulHost          string // Consul host used for load balancing
+	ConsulPort          int    // Consul port used for load balancing
 }
 
 // NewAPIGateway initializes a new API gateway with predefined routes
 func NewAPIGateway(consulHost string, consulPort int) *APIGateway {
 	return &APIGateway{
-		Routes:     []Route{},
-		ConsulHost: consulHost,
-		ConsulPort: consulPort,
+		Routes:              []Route{},
+		LoadBalancerClients: map[string]*client.Client{},
+		ConsulHost:          consulHost,
+		ConsulPort:          consulPort,
 	}
 }
 
@@ -96,6 +99,23 @@ func isRequestInvalid(r *http.Request) (bool, error) {
 	return doesContainInappropriateHeaders(r)
 }
 
+// getOrCreateClient retrieves an existing load balancer client or creates a new one for the given service
+func (g *APIGateway) getOrCreateClient(serviceName string) (*client.Client, error) {
+	// Check if we already have a load balancer client for the service
+	if _, ok := g.LoadBalancerClients[serviceName]; !ok {
+		newClient, err := client.NewClient(g.ConsulHost, g.ConsulPort, serviceName, client.RoundRobin)
+
+		if err != nil {
+			slog.Error(fmt.Sprintf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err))
+			return nil, err
+		}
+
+		g.LoadBalancerClients[serviceName] = newClient
+	}
+
+	return g.LoadBalancerClients[serviceName], nil
+}
+
 // FindBackend finds the backend service for a given request path
 func (g *APIGateway) FindBackend(path string) (string, string, error) {
 	log.Printf("Finding backend for path: %s\n", path)
@@ -106,14 +126,17 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 				serviceName := strings.TrimPrefix(route.Backend, "lb://")
 				log.Printf("Using load balancer for service: %s\n", serviceName)
 
-				// Get the load balancer for the service
-				lb, err := loadbalancer.GetLoadBalancer(serviceName, g.ConsulHost, g.ConsulPort)
+				serviceClient, err := g.getOrCreateClient(serviceName)
+
 				if err != nil {
-					log.Printf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err)
-					return "", "", err
+					slog.Error(fmt.Sprintf("Error in getting client for service: %s, Error: %s\n", serviceName, err))
+					return "", "", err // Return an error if client creation fails
 				}
 
-				allInstances, err := lb.GetHealthyInstances()
+				// Get the load balancer for the service
+				lb := serviceClient.GetLoadBalancer()
+
+				allInstances := lb.GetServers()
 
 				for _, instance := range allInstances {
 					instanceJSON, err := json.Marshal(instance)
@@ -125,7 +148,7 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 				}
 
 				// Get the healthy instances of the service
-				instance, err := lb.ChooseInstance()
+				instance, err := lb.ChooseServer()
 				if err != nil {
 					log.Printf("Error choosing instance for service: %s, Error: %s\n", serviceName, err)
 					return "", "", err
@@ -227,8 +250,8 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request to the backend service
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("Error forwarding request to backend: %s\n", err)
 		http.Error(w, "Failed to forward request to backend", http.StatusBadGateway)
@@ -236,7 +259,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Copy the response headers from the backend to the client
+	// Copy the response headers from the backend to the httpClient
 	for header, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Set(header, value)
@@ -250,8 +273,6 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	//testingSecurity()
-
 	var consulHost = "localhost"
 	var consulPort = 5150
 
