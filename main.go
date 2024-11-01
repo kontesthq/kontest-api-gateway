@@ -1,11 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kontesthq/go-load-balancer/client"
 	loadBalancerError "github.com/kontesthq/go-load-balancer/error"
+	"github.com/kontesthq/go-load-balancer/loadbalancer"
+	"github.com/kontesthq/go-load-balancer/server"
 	"io"
 	"kontest-api-gateway/Auth"
 	"kontest-api-gateway/utils"
@@ -28,7 +28,7 @@ type Route struct {
 // APIGateway holds the routing information and the Consul configuration.
 type APIGateway struct {
 	Routes              []Route // List of routes
-	LoadBalancerClients map[string]*client.Client
+	LoadBalancerClients map[string]loadbalancer.Client
 	ConsulHost          string // Consul host used for load balancing
 	ConsulPort          int    // Consul port used for load balancing
 }
@@ -37,7 +37,7 @@ type APIGateway struct {
 func NewAPIGateway(consulHost string, consulPort int) *APIGateway {
 	return &APIGateway{
 		Routes:              []Route{},
-		LoadBalancerClients: map[string]*client.Client{},
+		LoadBalancerClients: map[string]loadbalancer.Client{},
 		ConsulHost:          consulHost,
 		ConsulPort:          consulPort,
 	}
@@ -100,10 +100,10 @@ func isRequestInvalid(r *http.Request) (bool, error) {
 }
 
 // getOrCreateClient retrieves an existing load balancer client or creates a new one for the given service
-func (g *APIGateway) getOrCreateClient(serviceName string) (*client.Client, error) {
+func (g *APIGateway) getOrCreateClient(serviceName string) (loadbalancer.Client, error) {
 	// Check if we already have a load balancer client for the service
 	if _, ok := g.LoadBalancerClients[serviceName]; !ok {
-		newClient, err := client.NewClient(g.ConsulHost, g.ConsulPort, serviceName, client.RoundRobin)
+		newClient, err := loadbalancer.NewConsulClientWithCustomRule(g.ConsulHost, g.ConsulPort, serviceName, loadbalancer.NewRetryRule(loadbalancer.NewRoundRobinRule(), 200))
 
 		if err != nil {
 			slog.Error(fmt.Sprintf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err))
@@ -133,29 +133,24 @@ func (g *APIGateway) FindBackend(path string) (string, string, error) {
 					return "", "", err // Return an error if client creation fails
 				}
 
+				allInstances, _ := serviceClient.GetAllInstances()
+				slog.Info(fmt.Sprintf("all instances of service: %s, total count: %v\n", serviceName, len(allInstances)))
+				for i, instance := range allInstances {
+					slog.Info(fmt.Sprintf("Instance %v: %v\n", i, server.CommonServerString(instance)))
+				}
+
 				// Get the load balancer for the service
 				lb := serviceClient.GetLoadBalancer()
 
-				allInstances := lb.GetServers()
-
-				for _, instance := range allInstances {
-					instanceJSON, err := json.Marshal(instance)
-					if err != nil {
-						fmt.Println("Error marshalling instance to JSON:", err)
-						continue
-					}
-					fmt.Println(string(instanceJSON)) // This will print the instance as a JSON string
-				}
-
 				// Get the healthy instances of the service
-				instance, err := lb.ChooseServer()
+				instance, err := lb.ChooseServer(serviceClient)
 				if err != nil {
 					log.Printf("Error choosing instance for service: %s, Error: %s\n", serviceName, err)
 					return "", "", err
 				}
 
-				log.Printf("Forwarding to instance: %s:%d\n", instance.Address, instance.Port)
-				return "http://" + instance.Address + ":" + strconv.Itoa(instance.Port), strings.TrimPrefix(path, route.Path), nil
+				log.Printf("Forwarding to instance: %s\n", server.CommonServerString(instance))
+				return "http://" + instance.GetHost() + ":" + strconv.Itoa(instance.GetPort()), strings.TrimPrefix(path, route.Path), nil
 			} else {
 				// Direct backend found
 				log.Printf("Forwarding to backend: %s\n", route.Backend)
@@ -204,7 +199,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	// Create the new URL for the backend service
 	backendURL, err := url.Parse(backend)
 	if err != nil {
-		log.Printf("Invalid backend URL: %s, Error: %s\n", backend, err)
+		slog.Error(fmt.Sprintf("Invalid backend URL: %s, Error: %s\n", backend, err))
 		http.Error(w, "Invalid backend URL", http.StatusInternalServerError)
 		return
 	}
@@ -212,12 +207,12 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	// Construct the full URL for the backend request
 	backendURL.Path = newPath
 	backendURL.RawQuery = r.URL.RawQuery
-	log.Printf("Forwarding request to: %s\n", backendURL.String())
+	slog.Info(fmt.Sprintf("Forwarding request to: %s\n", backendURL.String()))
 
 	// Create a new request to the backend service
 	req, err := http.NewRequest(r.Method, backendURL.String(), r.Body)
 	if err != nil {
-		log.Printf("Error creating new request to backend: %s\n", err)
+		slog.Error(fmt.Sprintf("Error creating new request to backend: %s\n", err))
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
@@ -253,7 +248,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Printf("Error forwarding request to backend: %s\n", err)
+		slog.Error(fmt.Sprintf("Error forwarding request to backend: %s\n", err))
 		http.Error(w, "Failed to forward request to backend", http.StatusBadGateway)
 		return
 	}
@@ -269,7 +264,7 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	// Write the response status and body
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
-	log.Printf("Request forwarded with status: %d\n", resp.StatusCode)
+	slog.Info(fmt.Sprintf("Request forwarded with status: %d\n", resp.StatusCode))
 }
 
 func main() {
