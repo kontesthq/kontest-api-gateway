@@ -106,7 +106,7 @@ func (g *APIGateway) getOrCreateClient(serviceName string) (loadbalancer.Client,
 		newClient, err := loadbalancer.NewConsulClientWithCustomRule(g.ConsulHost, g.ConsulPort, serviceName, loadbalancer.NewRetryRule(loadbalancer.NewRoundRobinRule(), 200))
 
 		if err != nil {
-			slog.Error(fmt.Sprintf("Error getting load balancer for service: %s, Error: %s\n", serviceName, err))
+			slog.Error(fmt.Sprintf("Error creating load balancer for service: %s, Error: %s\n", serviceName, err))
 			return nil, err
 		}
 
