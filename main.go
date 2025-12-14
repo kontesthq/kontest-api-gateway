@@ -3,11 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	loadBalancerError "github.com/kontesthq/go-load-balancer/error"
-	"github.com/kontesthq/go-load-balancer/loadbalancer"
-	"github.com/kontesthq/go-load-balancer/server"
 	"io"
 	"kontest-api-gateway/Auth"
+	"kontest-api-gateway/tracing"
 	"kontest-api-gateway/utils"
 	"log"
 	"log/slog"
@@ -17,6 +15,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	loadBalancerError "github.com/kontesthq/go-load-balancer/error"
+	"github.com/kontesthq/go-load-balancer/loadbalancer"
+	"github.com/kontesthq/go-load-balancer/server"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Route defines a mapping from a path prefix to a backend service
@@ -210,7 +215,12 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	slog.Info(fmt.Sprintf("Forwarding request to: %s\n", backendURL.String()))
 
 	// Create a new request to the backend service
-	req, err := http.NewRequest(r.Method, backendURL.String(), r.Body)
+	req, err := http.NewRequestWithContext(
+		r.Context(),
+		r.Method,
+		backendURL.String(),
+		r.Body,
+	)
 	if err != nil {
 		slog.Error(fmt.Sprintf("Error creating new request to backend: %s\n", err))
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
@@ -244,6 +254,11 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	otel.GetTextMapPropagator().Inject(
+		req.Context(),
+		propagation.HeaderCarrier(req.Header),
+	)
+
 	// Forward the request to the backend service
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)
@@ -267,11 +282,16 @@ func (g *APIGateway) ForwardRequest(w http.ResponseWriter, r *http.Request) {
 	slog.Info(fmt.Sprintf("Request forwarded with status: %d\n", resp.StatusCode))
 }
 
-func main() {
-	var consulHost = "localhost"
-	var consulPort = 5150
+var (
+	serviceName = "KONTEST-API-GATEWAY" // Service name for Service Registry
 
-	// get the consul host and port from the environment variables
+	consulHost = "localhost"
+	consulPort = 5150
+
+	otelHost = "localhost:4318"
+)
+
+func initializeVariables() {
 	if host := os.Getenv("CONSUL_HOST"); host != "" {
 		consulHost = host
 	}
@@ -279,6 +299,24 @@ func main() {
 	if port := os.Getenv("CONSUL_PORT"); port != "" {
 		consulPort, _ = strconv.Atoi(port)
 	}
+
+	if host := os.Getenv("OTEL_HOST"); host != "" {
+		otelHost = host
+	} else {
+		slog.Warn("OTEL_HOST environment variable not found")
+	}
+}
+
+func main() {
+	initializeVariables()
+
+	tracerShutdown, err := tracing.Init(nil, otelHost, serviceName)
+	if err != nil {
+		slog.Error("Cannot start tracing", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
+	defer tracerShutdown()
 
 	// Initialize the API Gateway
 	gateway := NewAPIGateway(consulHost, consulPort)
@@ -298,9 +336,11 @@ func main() {
 	// Define the main route to forward all requests through the API Gateway
 	router.HandleFunc("/", gateway.ForwardRequest)
 
+	otelHandler := otelhttp.NewHandler(router, "http-server")
+
 	// Start the API Gateway server on port 5153
 	log.Println("API Gateway listening on port 5153...")
-	err := http.ListenAndServe(":5153", router)
+	err = http.ListenAndServe(":5153", otelHandler)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
